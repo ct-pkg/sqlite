@@ -1,0 +1,135 @@
+/*
+ * Sqlite.m.ct - the zero-cost surface of the package.
+ *
+ * Callers hold `SqliteDB *` / `SqliteStmt *`, never `sqlite3 *` /
+ * `sqlite3_stmt *` directly. Those wrapper types are declared by
+ * `Sqlite.shim.h`, which the compiler injects for this unit automatically, so
+ * no `#include <sqlite3.h>` is needed here - and the wrapper structs are what
+ * make `close()` / `finalize()` idempotent (see the shim header).
+ *
+ * `Conn` hangs off `SqliteDB *` (`db.exec(sql)`); `Statement` / `Binding` /
+ * `Column` all hang off `SqliteStmt *` (`st.step()`, `st.bind_int(1, v)`,
+ * `st.column_text(0)`). Every method expands at the call site into a plain C
+ * call to a `static inline` shim helper: no vtable, no interface value.
+ *
+ * Opening also has a receiver form: `dbPath.openSqliteDb()` returns the handle
+ * or NULL. `Lib.open` stays for callers that need the exact SQLite rc.
+ *
+ * `exec_cb` is the one entry that keeps a functional shape:
+ * `sqlite::Lib.exec_cb(db, sql, cb, ud)`. Its payload is a C function pointer
+ * plus the `void *userdata` that carries CT state into that callback; the
+ * callback cannot become part of a receiver, and `userdata` is the only
+ * channel through which CT state reaches it. Keeping the pair in one explicit
+ * namespace call documents that C boundary instead of hiding it behind a
+ * method. It is the only namespace entry that takes a handle.
+ *
+ * License: MIT for the CT code; SQLite itself is public domain (see LICENSE).
+ */
+
+namespace sqlite;
+
+pub type SqliteDB = struct ct_sqlite_db;
+pub type SqliteStmt = struct ct_sqlite_stmt;
+
+/* Connection: lifetime, one-shot execution, statement creation. */
+pub trait Conn {
+    int close();
+    const char *errmsg();
+    int errcode();
+    int busy_timeout(int ms);
+    int exec(const char *sql);
+    int changes();
+    long long last_insert_rowid();
+    int prepare(const char *sql, SqliteStmt **out);
+}
+
+/* Statement lifetime. */
+pub trait Statement {
+    int step();
+    int finalize();
+    int reset();
+    int clear_bindings();
+}
+
+/* Parameter binding. `bind_text` copies `n` bytes (`SQLITE_TRANSIENT`);
+   `n = -1` means "up to the NUL". */
+pub trait Binding {
+    int bind_text(int idx, const char *s, int n);
+    int bind_int(int idx, int v);
+    int bind_int64(int idx, long long v);
+    int bind_double(int idx, double v);
+}
+
+/* Reading a result row. */
+pub trait Column {
+    int column_count();
+    const char *column_name(int i);
+    int column_type(int i);
+    int column_int(int i);
+    long long column_int64(int i);
+    double column_double(int i);
+    const char *column_text(int i);
+}
+
+/* What has no receiver: version, error strings, opening, and the callback
+   shape. */
+pub trait Lib {
+    const char *libversion();
+    const char *errstr(int code);
+    int open(const char *path, SqliteDB **out);
+    int open_v2(const char *path, SqliteDB **out, int flags);
+    int exec_cb(SqliteDB *db, const char *sql, ct_sqlite_cb cb, void *ud);
+}
+
+/* Opening from a path receiver: `dbPath.openSqliteDb()`. */
+pub trait DbPath {
+    SqliteDB *openSqliteDb();
+}
+
+map trait Conn for type SqliteDB * {
+    close(db) -> ct_sqlite_close(db);
+    errmsg(db) -> ct_sqlite_errmsg(db);
+    errcode(db) -> ct_sqlite_errcode(db);
+    busy_timeout(db, ms) -> ct_sqlite_busy_timeout(db, ms);
+    exec(db, sql) -> ct_sqlite_exec(db, sql);
+    changes(db) -> ct_sqlite_changes(db);
+    last_insert_rowid(db) -> ct_sqlite_last_insert_rowid(db);
+    prepare(db, sql, out) -> ct_sqlite_prepare(db, sql, out);
+}
+
+map trait Statement for type SqliteStmt * {
+    step(st) -> ct_sqlite_step(st);
+    finalize(st) -> ct_sqlite_finalize(st);
+    reset(st) -> ct_sqlite_reset(st);
+    clear_bindings(st) -> ct_sqlite_clear_bindings(st);
+}
+
+map trait Binding for type SqliteStmt * {
+    bind_text(st, idx, s, n) -> ct_sqlite_bind_text(st, idx, s, n);
+    bind_int(st, idx, v) -> ct_sqlite_bind_int(st, idx, v);
+    bind_int64(st, idx, v) -> ct_sqlite_bind_int64(st, idx, v);
+    bind_double(st, idx, v) -> ct_sqlite_bind_double(st, idx, v);
+}
+
+map trait Column for type SqliteStmt * {
+    column_count(st) -> ct_sqlite_column_count(st);
+    column_name(st, i) -> ct_sqlite_column_name(st, i);
+    column_type(st, i) -> ct_sqlite_column_type(st, i);
+    column_int(st, i) -> ct_sqlite_column_int(st, i);
+    column_int64(st, i) -> ct_sqlite_column_int64(st, i);
+    column_double(st, i) -> ct_sqlite_column_double(st, i);
+    column_text(st, i) -> ct_sqlite_column_text(st, i);
+}
+
+map trait Lib for namespace sqlite {
+    libversion() -> sqlite3_libversion();
+    errstr(code) -> sqlite3_errstr(code);
+    open(path, out) -> ct_sqlite_open(path, out);
+    open_v2(path, out, flags) -> ct_sqlite_open_v2(path, out, flags);
+    exec_cb(db, sql, cb, ud) -> ct_sqlite_exec_cb(db, sql, cb, ud);
+}
+
+/* `char *` host only; no `const char *` twin (the compiler folds qualifiers). */
+map trait DbPath for type char * {
+    openSqliteDb(path) -> ct_sqlite_open_path(path);
+}

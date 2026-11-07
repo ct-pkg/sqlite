@@ -1,0 +1,15 @@
+# sqlite - SQLite mapping package (Wave 2).
+#
+# Two layers: `sqlite/Sqlite.m.ct` (zero-cost static mappings; `Conn` hangs off
+# `SqliteDB *`, `Statement` / `Binding` / `Column` off `SqliteStmt *`)
+# and `sqlite/Sqlite.shim.h` (the handle wrappers, idempotent close/finalize,
+# double-pointer out-parameters, callback forwarding, the text narrowing).
+# Handles are closed explicitly by the caller; close/finalize are idempotent.
+# The system library is linked, never vendored.
+#
+# `ct install` folds `ldflags` into the command it prints.
+name = sqlite
+version = 0.1.0
+licence = PublicDomain
+ldflags = -lsqlite3
+requires = ct >= 0.20.0

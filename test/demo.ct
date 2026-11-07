@@ -1,0 +1,51 @@
+#include <sqlite3.h>
+#include <stdio.h>
+
+import sqlite::Sqlite;
+
+int main(void)
+{
+    SqliteDB *db = 0;
+    SqliteStmt *ins = 0;
+    SqliteStmt *sel = 0;
+    int rc;
+    int rows = 0;
+
+    rc = sqlite::Lib.open(":memory:", &db);
+    printf("open=%d\n", rc);
+    if (rc != SQLITE_OK) {
+        db.close();
+        return 1;
+    }
+
+    rc = db.exec("CREATE TABLE people(id INTEGER PRIMARY KEY, name TEXT)");
+    printf("create=%d\n", rc);
+
+    rc = db.prepare("INSERT INTO people(id, name) VALUES(?, ?)", &ins);
+    printf("prepare_insert=%d\n", rc);
+    ins.bind_int64(1, 1);
+    ins.bind_text(2, "alice", -1);
+    printf("step_insert=%d\n", ins.step());
+    ins.reset();
+    ins.bind_int64(1, 2);
+    ins.bind_text(2, "bob", -1);
+    printf("step_insert=%d\n", ins.step());
+    ins.finalize();
+    ins = 0;
+
+    rc = db.prepare("SELECT id, name FROM people ORDER BY id", &sel);
+    printf("prepare_select=%d\n", rc);
+    while (sel.step() == SQLITE_ROW) {
+        rows = rows + 1;
+        printf("row %d: id=%lld name=%s\n", rows,
+               sel.column_int64(0), sel.column_text(1));
+    }
+    printf("rows=%d\n", rows);
+    sel.finalize();
+    sel = 0;
+
+    db.close();
+    db = 0;
+    printf("closed\n");
+    return 0;
+}

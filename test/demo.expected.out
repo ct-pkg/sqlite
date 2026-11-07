@@ -1,0 +1,10 @@
+open=0
+create=0
+prepare_insert=0
+step_insert=101
+step_insert=101
+prepare_select=0
+row 1: id=1 name=alice
+row 2: id=2 name=bob
+rows=2
+closed

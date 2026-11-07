@@ -1,0 +1,445 @@
+/*
+ * unit.ct - the sqlite package's repeatable unit suite.
+ *
+ * One assertion per behaviour, all values checked with `check()`, no golden
+ * output file. The suite covers every public method:
+ *
+ *   Conn      8 : close errmsg errcode busy_timeout exec changes
+ *                 last_insert_rowid prepare
+ *   Statement 4 : step finalize reset clear_bindings
+ *   Binding   4 : bind_text bind_int bind_int64 bind_double
+ *   Column    7 : column_count column_name column_type column_int
+ *                 column_int64 column_double column_text
+ *   Lib       5 : libversion errstr open open_v2 exec_cb
+ *   DbPath    1 : openSqliteDb
+ *
+ * Boundaries: `:memory:` and a /tmp file, invalid paths, double close and
+ * finalize, calls on a 0 handle, bind_text with embedded NUL and explicit
+ * length, bind_int64 at both limits, bind index out of range, column type
+ * mismatch, prepare syntax error, step after SQLITE_DONE, exec_cb row count
+ * and column values, and BEGIN/ROLLBACK through exec.
+ *
+ * Build and run through test/run.sh. The exit code is non-zero if any
+ * assertion fails.
+ *
+ * License: MIT (see LICENSE).
+ */
+
+#include <sqlite3.h>
+#include <limits.h>
+#include <stdio.h>
+#include <string.h>
+
+import sqlite::Sqlite;
+
+int passed = 0;
+int failed = 0;
+
+void check(int cond, const char *name)
+{
+    if (cond) {
+        passed = passed + 1;
+        printf("PASS %s\n", name);
+    } else {
+        failed = failed + 1;
+        printf("FAIL %s\n", name);
+    }
+}
+
+/* `exec_cb` payload: [0] rows seen, [1] mismatches. */
+int on_row(void *ud, int n, char **vals, char **cols)
+{
+    int *state = (int *)ud;
+
+    state[0] = state[0] + 1;
+    if (n != 2) {
+        state[1] = state[1] + 1;
+        return 0;
+    }
+    if (strcmp(cols[0], "id") != 0) state[1] = state[1] + 1;
+    if (strcmp(cols[1], "name") != 0) state[1] = state[1] + 1;
+    if (state[0] == 1) {
+        if (strcmp(vals[0], "1") != 0) state[1] = state[1] + 1;
+        if (strcmp(vals[1], "alice") != 0) state[1] = state[1] + 1;
+    } else {
+        if (strcmp(vals[0], "2") != 0) state[1] = state[1] + 1;
+        if (strcmp(vals[1], "bob") != 0) state[1] = state[1] + 1;
+    }
+    return 0;
+}
+
+void test_open_close(void)
+{
+    char *mem = ":memory:";
+    char *bad = "/no/such/dir/ct-sqlite-unit.db";
+    char *dbfile = "/tmp/ct-sqlite-unit.db";
+    char *rofile = "/tmp/ct-sqlite-unit-ro.db";
+    SqliteDB *db = 0;
+    SqliteDB *nulldb = 0;
+
+    remove(dbfile);
+    remove(rofile);
+
+    db = mem.openSqliteDb();
+    check(db != 0, "DbPath.openSqliteDb(:memory:) returns a handle");
+    check(db.close() == SQLITE_OK, "Conn.close(:memory:) returns SQLITE_OK");
+    check(db.close() == SQLITE_OK, "Conn.close again is idempotent");
+
+    db = ":memory:".openSqliteDb();
+    check(db != 0, "DbPath.openSqliteDb literal receiver (ct 0.20.0)");
+    check(db.close() == SQLITE_OK, "Conn.close on literal receiver handle");
+
+    db = bad.openSqliteDb();
+    check(db == 0, "DbPath.openSqliteDb(invalid path) returns 0");
+
+    db = dbfile.openSqliteDb();
+    check(db != 0, "DbPath.openSqliteDb(temp file) returns a handle");
+    check(db.exec("CREATE TABLE persisted(v TEXT)") == SQLITE_OK,
+          "Conn.exec on temp file creates schema");
+    check(db.close() == SQLITE_OK, "Conn.close temp file");
+
+    db = 0;
+    check(sqlite::Lib.open(dbfile, &db) == SQLITE_OK,
+          "Lib.open(temp file) returns SQLITE_OK");
+    check(db != 0, "Lib.open(temp file) hands back a handle");
+    check(db.exec("INSERT INTO persisted(v) VALUES('kept')") == SQLITE_OK,
+          "Lib.open(temp file) reopens the persisted schema");
+    check(db.close() == SQLITE_OK, "Conn.close reopened temp file");
+
+    db = 0;
+    check(sqlite::Lib.open(bad, &db) == SQLITE_CANTOPEN,
+          "Lib.open(invalid path) returns SQLITE_CANTOPEN");
+    check(db != 0, "Lib.open(invalid path) still hands back a closable shell");
+    check(db.close() == SQLITE_OK, "Conn.close failed-open handle");
+    check(db.close() == SQLITE_OK, "Conn.close failed-open handle twice");
+
+    db = 0;
+    check(sqlite::Lib.open_v2(":memory:", &db,
+                              SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE)
+              == SQLITE_OK,
+          "Lib.open_v2(:memory:, rw|create) returns SQLITE_OK");
+    check(db != 0, "Lib.open_v2(:memory:) hands back a handle");
+    check(db.close() == SQLITE_OK, "Conn.close open_v2 handle");
+
+    db = 0;
+    check(sqlite::Lib.open_v2(rofile, &db, SQLITE_OPEN_READONLY)
+              == SQLITE_CANTOPEN,
+          "Lib.open_v2(readonly, missing file) returns SQLITE_CANTOPEN");
+    check(db.close() == SQLITE_OK, "Conn.close readonly failed-open handle");
+
+    check(nulldb.close() == SQLITE_OK, "Conn.close on 0 handle is a no-op");
+
+    remove(dbfile);
+    remove(rofile);
+}
+
+void test_conn_meta(void)
+{
+    SqliteDB *db = 0;
+    SqliteStmt *st = 0;
+
+    check(sqlite::Lib.open(":memory:", &db) == SQLITE_OK,
+          "Conn. Lib.open(:memory:) returns SQLITE_OK");
+    check(db.busy_timeout(1000) == SQLITE_OK, "Conn.busy_timeout(1000)");
+    check(db.busy_timeout(0) == SQLITE_OK, "Conn.busy_timeout(0)");
+
+    check(db.exec("CREATE TABLE t(id INTEGER PRIMARY KEY, name TEXT)")
+              == SQLITE_OK,
+          "Conn.exec(CREATE TABLE)");
+    check(db.exec("INSERT INTO t(name) VALUES('alice'), ('bob')")
+              == SQLITE_OK,
+          "Conn.exec(INSERT two rows)");
+    check(db.changes() == 2, "Conn.changes == 2 after two-row INSERT");
+    check(db.last_insert_rowid() == 2, "Conn.last_insert_rowid == 2");
+
+    check(db.exec("BEGIN") == SQLITE_OK, "Conn.exec(BEGIN)");
+    check(db.exec("INSERT INTO t(name) VALUES('tx')") == SQLITE_OK,
+          "Conn.exec(INSERT inside transaction)");
+    check(db.changes() == 1, "Conn.changes == 1 inside transaction");
+    check(db.exec("ROLLBACK") == SQLITE_OK, "Conn.exec(ROLLBACK)");
+
+    check(db.prepare("SELECT COUNT(*) FROM t", &st) == SQLITE_OK,
+          "Conn.prepare(COUNT)");
+    check(st.step() == SQLITE_ROW, "Statement.step(COUNT) returns ROW");
+    check(st.column_int(0) == 2, "ROLLBACK left exactly two rows");
+    check(st.finalize() == SQLITE_OK, "Statement.finalize(COUNT)");
+
+    check(db.exec("SELEC nope") == SQLITE_ERROR,
+          "Conn.exec(bad SQL) returns SQLITE_ERROR");
+    check(db.errcode() == SQLITE_ERROR, "Conn.errcode == SQLITE_ERROR");
+    check(db.errmsg() != 0, "Conn.errmsg is non-null");
+    check(strlen(db.errmsg()) > 0, "Conn.errmsg is non-empty");
+    check(strstr(db.errmsg(), "syntax error") != 0,
+          "Conn.errmsg mentions syntax error");
+
+    check(db.close() == SQLITE_OK, "Conn.close after meta checks");
+}
+
+void test_prepare_read(void)
+{
+    SqliteDB *db = 0;
+    SqliteStmt *st = 0;
+
+    check(sqlite::Lib.open(":memory:", &db) == SQLITE_OK,
+          "read: Lib.open(:memory:)");
+    check(db.exec("CREATE TABLE q(i INTEGER, r REAL, s TEXT, n TEXT)")
+              == SQLITE_OK,
+          "read: CREATE TABLE");
+    check(db.exec("INSERT INTO q VALUES(7, 2.5, 'abc', NULL)") == SQLITE_OK,
+          "read: INSERT one row");
+
+    check(db.prepare("SELECT i, r, s, n FROM q", &st) == SQLITE_OK,
+          "Conn.prepare(SELECT four columns)");
+    check(st != 0, "Conn.prepare returns a statement handle");
+    check(st.column_count() == 4, "Column.column_count == 4");
+    check(strcmp(st.column_name(0), "i") == 0, "Column.column_name(0) == i");
+    check(strcmp(st.column_name(1), "r") == 0, "Column.column_name(1) == r");
+    check(strcmp(st.column_name(2), "s") == 0, "Column.column_name(2) == s");
+    check(strcmp(st.column_name(3), "n") == 0, "Column.column_name(3) == n");
+
+    check(st.step() == SQLITE_ROW, "Statement.step returns ROW");
+    check(st.column_type(0) == SQLITE_INTEGER,
+          "Column.column_type(INTEGER)");
+    check(st.column_type(1) == SQLITE_FLOAT, "Column.column_type(REAL)");
+    check(st.column_type(2) == SQLITE_TEXT, "Column.column_type(TEXT)");
+    check(st.column_type(3) == SQLITE_NULL, "Column.column_type(NULL)");
+
+    check(st.column_int(0) == 7, "Column.column_int(INTEGER) == 7");
+    check(st.column_int64(0) == 7, "Column.column_int64(INTEGER) == 7");
+    check(st.column_double(0) == 7.0,
+          "Column.column_double(INTEGER) == 7.0");
+    check(st.column_int(1) == 2,
+          "Column.column_int(REAL 2.5) truncates to 2");
+    check(st.column_double(1) == 2.5, "Column.column_double(REAL) == 2.5");
+    check(st.column_int(2) == 0, "Column.column_int(TEXT) == 0");
+    check(st.column_int64(2) == 0, "Column.column_int64(TEXT) == 0");
+    check(st.column_double(2) == 0.0, "Column.column_double(TEXT) == 0.0");
+    check(st.column_int(3) == 0, "Column.column_int(NULL) == 0");
+    check(st.column_double(3) == 0.0, "Column.column_double(NULL) == 0.0");
+
+    check(strcmp(st.column_text(0), "7") == 0,
+          "Column.column_text(INTEGER) renders 7");
+    check(strcmp(st.column_text(1), "2.5") == 0,
+          "Column.column_text(REAL) renders 2.5");
+    check(strcmp(st.column_text(2), "abc") == 0,
+          "Column.column_text(TEXT) returns abc");
+    check(st.column_text(3) == 0, "Column.column_text(NULL) returns 0");
+
+    check(st.step() == SQLITE_DONE, "Statement.step returns DONE");
+    check(st.step() == SQLITE_MISUSE,
+          "Statement.step after DONE returns SQLITE_MISUSE");
+    check(st.finalize() == SQLITE_OK, "Statement.finalize after DONE");
+    check(st.finalize() == SQLITE_OK, "Statement.finalize twice is idempotent");
+
+    st = 0;
+    check(db.prepare("SELEC nope", &st) == SQLITE_ERROR,
+          "Conn.prepare(syntax error) returns SQLITE_ERROR");
+    check(st != 0, "failed prepare still returns a statement shell");
+    check(st.step() == SQLITE_MISUSE,
+          "step on syntax-error statement returns SQLITE_MISUSE");
+    check(st.finalize() == SQLITE_OK, "finalize syntax-error statement");
+    check(st.finalize() == SQLITE_OK,
+          "finalize syntax-error statement twice");
+
+    st = 0;
+    check(st.step() == SQLITE_MISUSE, "step on 0 handle returns SQLITE_MISUSE");
+    check(st.reset() == SQLITE_OK, "reset on 0 handle is a no-op success");
+    check(st.clear_bindings() == SQLITE_OK,
+          "clear_bindings on 0 handle is a no-op success");
+    check(st.finalize() == SQLITE_OK, "finalize on 0 handle is a no-op success");
+
+    check(db.close() == SQLITE_OK, "read: close");
+}
+
+void test_binding(void)
+{
+    SqliteDB *db = 0;
+    SqliteStmt *st = 0;
+    char tbuf[6];
+    long long v;
+
+    check(sqlite::Lib.open(":memory:", &db) == SQLITE_OK,
+          "binding: Lib.open(:memory:)");
+    check(db.exec("CREATE TABLE b(t TEXT, i INTEGER, i64 INTEGER, d REAL)")
+              == SQLITE_OK,
+          "binding: CREATE TABLE");
+    check(db.prepare("INSERT INTO b(t, i, i64, d) VALUES(?, ?, ?, ?)", &st)
+              == SQLITE_OK,
+          "binding: prepare INSERT");
+
+    tbuf[0] = 'a';
+    tbuf[1] = 'b';
+    tbuf[2] = 0;
+    tbuf[3] = 'c';
+    tbuf[4] = 'd';
+    tbuf[5] = 0;
+    check(st.bind_text(1, tbuf, 5) == SQLITE_OK,
+          "Binding.bind_text(..., 5) returns SQLITE_OK");
+    check(st.bind_int(2, -7) == SQLITE_OK,
+          "Binding.bind_int(-7) returns SQLITE_OK");
+    check(st.bind_int64(3, LLONG_MAX) == SQLITE_OK,
+          "Binding.bind_int64(LLONG_MAX) returns SQLITE_OK");
+    check(st.bind_double(4, 1.25) == SQLITE_OK,
+          "Binding.bind_double(1.25) returns SQLITE_OK");
+    tbuf[0] = 'z';
+    tbuf[3] = 'z';
+    check(st.step() == SQLITE_DONE, "binding: step row 1");
+
+    check(st.reset() == SQLITE_OK, "Statement.reset after row 1");
+    check(st.bind_int64(3, LLONG_MIN) == SQLITE_OK,
+          "Binding.bind_int64(LLONG_MIN) returns SQLITE_OK");
+    check(st.step() == SQLITE_DONE,
+          "binding: step row 2 with retained text/int/double");
+
+    check(st.reset() == SQLITE_OK, "Statement.reset after row 2");
+    check(st.bind_text(1, "ab\0cd", 2) == SQLITE_OK,
+          "Binding.bind_text(..., 2) returns SQLITE_OK");
+    check(st.step() == SQLITE_DONE, "binding: step row 3");
+
+    check(st.reset() == SQLITE_OK, "Statement.reset after row 3");
+    check(st.bind_text(1, "ab\0cd", -1) == SQLITE_OK,
+          "Binding.bind_text(..., -1) returns SQLITE_OK");
+    check(st.step() == SQLITE_DONE, "binding: step row 4");
+
+    check(st.reset() == SQLITE_OK, "Statement.reset after row 4");
+    check(st.clear_bindings() == SQLITE_OK,
+          "Statement.clear_bindings returns SQLITE_OK");
+    check(st.step() == SQLITE_DONE, "binding: step row 5 with all NULL");
+
+    check(st.finalize() == SQLITE_OK, "binding: finalize INSERT");
+    st = 0;
+
+    check(db.prepare("SELECT hex(t), t, i, i64, d, typeof(t) FROM b ORDER BY rowid",
+                     &st)
+              == SQLITE_OK,
+          "binding: prepare SELECT");
+
+    check(st.step() == SQLITE_ROW, "binding: SELECT row 1");
+    check(strcmp(st.column_text(0), "6162006364") == 0,
+          "bind_text copied 5 bytes including NUL");
+    check(st.column_int(2) == -7, "bind_int round-trips -7");
+    v = st.column_int64(3);
+    check(v == LLONG_MAX, "bind_int64 round-trips LLONG_MAX");
+    check(st.column_double(4) == 1.25, "bind_double round-trips 1.25");
+
+    check(st.step() == SQLITE_ROW, "binding: SELECT row 2");
+    check(strcmp(st.column_text(0), "6162006364") == 0,
+          "reset retains the text binding");
+    check(st.column_int(2) == -7, "reset retains the int binding");
+    v = st.column_int64(3);
+    check(v == LLONG_MIN, "bind_int64 round-trips LLONG_MIN");
+    check(st.column_double(4) == 1.25, "reset retains the double binding");
+
+    check(st.step() == SQLITE_ROW, "binding: SELECT row 3");
+    check(strcmp(st.column_text(0), "6162") == 0,
+          "bind_text n=2 stores exactly two bytes");
+    check(strcmp(st.column_text(5), "text") == 0,
+          "bind_text stores TEXT type");
+
+    check(st.step() == SQLITE_ROW, "binding: SELECT row 4");
+    check(strcmp(st.column_text(0), "6162") == 0,
+          "bind_text n=-1 stops at the first NUL");
+
+    check(st.step() == SQLITE_ROW, "binding: SELECT row 5");
+    check(st.column_type(1) == SQLITE_NULL,
+          "clear_bindings makes text NULL");
+    check(st.column_text(1) == 0,
+          "column_text on the NULL text returns 0");
+    check(st.column_type(2) == SQLITE_NULL,
+          "clear_bindings makes int NULL");
+    check(st.column_type(3) == SQLITE_NULL,
+          "clear_bindings makes int64 NULL");
+    check(st.column_type(4) == SQLITE_NULL,
+          "clear_bindings makes double NULL");
+    check(strcmp(st.column_text(5), "null") == 0,
+          "clear_bindings makes typeof(t) null");
+    check(st.step() == SQLITE_DONE, "binding: SELECT reaches DONE");
+    check(st.finalize() == SQLITE_OK, "binding: finalize SELECT");
+
+    st = 0;
+    check(db.prepare("INSERT INTO b(t) VALUES(?)", &st) == SQLITE_OK,
+          "range: prepare one-parameter INSERT");
+    check(st.bind_text(0, "x", -1) == SQLITE_RANGE,
+          "bind_text index 0 returns SQLITE_RANGE");
+    check(st.bind_text(2, "x", -1) == SQLITE_RANGE,
+          "bind_text index 2 returns SQLITE_RANGE");
+    check(st.bind_int(0, 1) == SQLITE_RANGE,
+          "bind_int index 0 returns SQLITE_RANGE");
+    check(st.bind_int(2, 1) == SQLITE_RANGE,
+          "bind_int index 2 returns SQLITE_RANGE");
+    check(st.bind_int64(2, 1) == SQLITE_RANGE,
+          "bind_int64 index 2 returns SQLITE_RANGE");
+    check(st.bind_double(2, 1.0) == SQLITE_RANGE,
+          "bind_double index 2 returns SQLITE_RANGE");
+    check(st.finalize() == SQLITE_OK, "range: finalize");
+
+    check(db.close() == SQLITE_OK, "binding: close");
+}
+
+void test_exec_cb(void)
+{
+    SqliteDB *db = 0;
+    int state[2];
+
+    check(sqlite::Lib.open(":memory:", &db) == SQLITE_OK,
+          "exec_cb: Lib.open(:memory:)");
+    check(db.exec("CREATE TABLE p(id INTEGER PRIMARY KEY, name TEXT)")
+              == SQLITE_OK,
+          "exec_cb: CREATE TABLE");
+    check(db.exec("INSERT INTO p(name) VALUES('alice'), ('bob')") == SQLITE_OK,
+          "exec_cb: INSERT two rows");
+
+    state[0] = 0;
+    state[1] = 0;
+    check(sqlite::Lib.exec_cb(db, "SELECT id, name FROM p ORDER BY id", on_row,
+                              &state[0])
+              == SQLITE_OK,
+          "Lib.exec_cb returns SQLITE_OK");
+    check(state[0] == 2, "Lib.exec_cb invokes the callback once per row");
+    check(state[1] == 0,
+          "Lib.exec_cb passes the expected column names and values");
+
+    state[0] = 0;
+    state[1] = 0;
+    check(sqlite::Lib.exec_cb(db, "SELEC nope", on_row, &state[0])
+              == SQLITE_ERROR,
+          "Lib.exec_cb(bad SQL) returns SQLITE_ERROR");
+    check(state[0] == 0, "Lib.exec_cb does not call back on error");
+
+    check(db.close() == SQLITE_OK, "exec_cb: close");
+}
+
+void test_lib_meta(void)
+{
+    const char *version = sqlite::Lib.libversion();
+    const char *err = sqlite::Lib.errstr(SQLITE_ERROR);
+    const char *constraint = sqlite::Lib.errstr(SQLITE_CONSTRAINT);
+
+    check(version != 0, "Lib.libversion returns a string");
+    check(strlen(version) >= 5, "Lib.libversion has a plausible length");
+    check(version[0] >= '0', "Lib.libversion starts with a digit");
+    check(version[0] <= '9', "Lib.libversion first character is numeric");
+    check(err != 0, "Lib.errstr(SQLITE_ERROR) returns a string");
+    check(strcmp(err, "SQL logic error") == 0,
+          "Lib.errstr(SQLITE_ERROR) == SQL logic error");
+    check(strcmp(constraint, "constraint failed") == 0,
+          "Lib.errstr(SQLITE_CONSTRAINT) == constraint failed");
+}
+
+int main(void)
+{
+    printf("sqlite unit suite (ct 0.20.0, -Wall -Wextra)\n");
+
+    test_open_close();
+    test_conn_meta();
+    test_prepare_read();
+    test_binding();
+    test_exec_cb();
+    test_lib_meta();
+
+    printf("SUMMARY passed=%d failed=%d\n", passed, failed);
+    if (failed != 0) {
+        return 1;
+    }
+    return 0;
+}
