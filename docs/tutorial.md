@@ -341,7 +341,7 @@ prepare ──> [未执行] ──step──> SQLITE_ROW ──step──> ... �
 
 ### 5.3 绑定：`Binding`（宿主 `SqliteStmt *`）
 
-参数下标从 **1** 开始。越界时返回 `SQLITE_RANGE`。
+参数下标从 **1** 开始（即 SQL 里 `?` 的位次），不接受 0。越界时返回 `SQLITE_RANGE`。
 
 | 方法 | 签名 | 语义 |
 | --- | --- | --- |
@@ -374,6 +374,7 @@ prepare ──> [未执行] ──step──> SQLITE_ROW ──step──> ... �
 
 列类型与读法：
 
+- 列下标 `i` 从 **0** 开始，与 `Binding` 的绑定下标 1 起不同；
 - 读文本前可以先判断 `column_type`，避免把 NULL 当字符串；
 - `column_text` 只保证 NUL 结尾，不返回长度；文本内含 NUL 会被截断；
 - BLOB 列仍可用 `column_text` 读，但按字节解释，且没有 BLOB 绑定接口；本包不做 BLOB 的原样往返。
@@ -787,7 +788,8 @@ ctc: git clone of 'https://github.com/ct-pkg/sqlite' failed
 - `finalize()` 之后再 `step()` 或 `reset()`：内部指针已置空，SQLite 对空语句返回 misuse 码
   （21），不要依赖这个值；
 - 先 `db.close()` 再 finalize 语句：连接已关闭/推迟关闭，行为不可靠；
-- 绑定下标从 0 开始：SQLite 参数下标是 1 起的，越界返回 `SQLITE_RANGE`（25）。
+- 别把绑定下标当 0 起：SQLite 参数下标是 1 起的，传 0 会越界并返回 `SQLITE_RANGE`（25），
+  不是 misuse（详见 §5.3）。
 
 ### 7.9 `errmsg()` 返回 `not an error` 或 `out of memory`
 
