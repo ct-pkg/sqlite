@@ -10,6 +10,6 @@
 # `ct install` folds `ldflags` into the command it prints.
 name = sqlite
 version = 0.1.0
-licence = PublicDomain
+licence = MIT
 ldflags = -lsqlite3
 requires = ct >= 0.20.0

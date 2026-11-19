@@ -45,7 +45,7 @@ shim 的 `static inline` 转发，没有 vtable、没有接口值、没有间接
 ```ini
 name = sqlite
 version = 0.1.0
-licence = PublicDomain
+licence = MIT
 ldflags = -lsqlite3
 requires = ct >= 0.20.0
 ```
@@ -836,5 +836,6 @@ ctc: git clone of 'https://github.com/ct-pkg/sqlite' failed
     `sqlite3_close_v2` 推迟关闭，资源留到进程结束。
 15. **版本与许可**：包版本 `0.1.0`，当前工作树未打 tag、未写入 `index/`；编译器门槛
     `requires = ct >= 0.20.0`，验证使用 `ct v0.20.0`。链接依赖是平台的 `libsqlite3` 与
-    `sqlite3.h`（`ldflags = -lsqlite3`）。SQLite 本身是 public domain；本包的 CT 代码、shim、
-    README 与 demo 是 MIT，见 [../LICENSE](../LICENSE)。
+    `sqlite3.h`（`ldflags = -lsqlite3`）。本包（CT 代码、shim、README 与 demo）以 MIT 发布，
+    见 [../LICENSE](../LICENSE)；SQLite 上游为 public domain，本包只外部链接、未捆绑其源码或
+    许可原文，LICENSE 末尾保留上游声明。

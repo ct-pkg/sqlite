@@ -151,6 +151,6 @@ ct build -I vendor/sqlite --ldflags '-lsqlite3' src/main.ct -o build/main
 API 逐组说明（方法签名、语义、返回值、失败情形）、句柄与语句生命周期、5 个可运行配方、
 错误排查和全部限制，见 [docs/tutorial.md](docs/tutorial.md)。
 
-- 许可：SQLite 本身为 public domain；本包的 CT 代码、shim、README 与 demo 为 MIT，
-  见 [LICENSE](LICENSE)。
+- 许可：本包（CT 代码、shim、README 与 demo）以 MIT 发布，见 [LICENSE](LICENSE)；
+  SQLite 上游为 public domain，本包只外部链接、未捆绑其源码，LICENSE 末尾保留上游声明。
 - 版本：`0.1.0`；未打 tag、未写入 `index/`。

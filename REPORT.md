@@ -41,7 +41,7 @@ wrapper，均记录在 NOTES。
 | 文件 | 作用 |
 | --- | --- |
 | `ct.pkg` | `name = sqlite`、`version = 0.1.0`、`ldflags = -lsqlite3`、`requires = ct >= 0.20.0`。 |
-| `LICENSE` | SQLite public domain + 本包 CT 代码 MIT。 |
+| `LICENSE` | 标准 MIT 全文（版权人 `ct-pkg contributors`）；文末保留 SQLite 上游 public domain 声明。 |
 | `README.md` | 包定位 / 依赖与门禁 / 安装 / 最小示例 / 文档链接。 |
 | `docs/tutorial.md` | API 逐组说明、生命周期、配方、排查与限制。 |
 | `NOTES.probe.md` | 5 项探针 + 7 项附加发现的代码、命令与真实输出（文首标注后续变更）。 |
